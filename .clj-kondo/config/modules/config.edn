@@ -2642,7 +2642,8 @@
    :uses #{lib
            lib.legacy-mbql
            lib.schema
-           util}
+           util
+           util.config}
    :model-imports #{:model/Card
                     :model/Collection
                     :model/Dashboard

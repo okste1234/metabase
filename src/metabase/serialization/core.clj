@@ -6,15 +6,26 @@
   (:refer-clojure :exclude [import load])
   (:require
    [metabase.serialization.db :as serialization.db]
+   [metabase.serialization.export :as serialization.export]
+   [metabase.serialization.extract :as serialization.extract]
    [metabase.serialization.fk :as serialization.fk]
    [metabase.serialization.mbql :as serialization.mbql]
    [metabase.serialization.parameters :as serialization.parameters]
+   [metabase.serialization.portable :as serialization.portable]
    [metabase.serialization.resolve :as resolve]
    [metabase.serialization.resolve.app-db :as resolve.app-db]
+   [metabase.serialization.spec :as serialization.spec]
+   [metabase.serialization.storage :as serialization.storage]
    [metabase.serialization.visualization-settings :as serialization.viz]
    [metabase.util.namespaces :as shared.ns]))
 
 (shared.ns/import-fns
+ [serialization.export
+  export
+  export-batch
+  with-export-transaction]
+ [serialization.extract
+  export-owned]
  [serialization.fk
   database-transform
   export-databases
@@ -31,6 +42,15 @@
   import-users
   table-transform
   user-transform]
+ [serialization.spec
+  columns
+  date-transform
+  import-only
+  keyword-transform
+  spec
+  skip-all
+  spec-of
+  unchanged]
  [resolve
   nested-owner
   collecting?
@@ -67,7 +87,21 @@
   import-visualization-settings
   import-visualizer-settings
   link-card-model->toucan-model
-  visualization-settings-transform])
+  visualization-settings-transform]
+ [serialization.storage
+  collection-namespace-folder
+  resource-paths
+  storable
+  storage-default-collection-path
+  batch-storage-paths
+  storage-path-prefixes
+  storage-paths]
+ [serialization.portable
+  key-of
+  log-str
+  model-of
+  portable-id
+  restore-identity])
 
 (def batch-size
   "The number of rows, ids or entities that serialization queries or processes together."
@@ -85,3 +119,7 @@
   "The import resolver backed by the application database, which creates the Users, Databases, Tables and Fields an
   import refers to but this instance lacks."
   resolve.app-db/import-resolver)
+
+(def skip
+  "A transformed value that leaves its key out of the result."
+  serialization.spec/skip)
