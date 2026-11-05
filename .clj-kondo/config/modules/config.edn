@@ -2639,9 +2639,15 @@
   serialization
   {:team "Data Apps"
    :api  #{}
-   :uses #{util}
-   :model-imports #{:model/Database
+   :uses #{lib.schema util}
+   :model-imports #{:model/Card
+                    :model/Collection
+                    :model/Dashboard
+                    :model/Database
+                    :model/Document
                     :model/Field
+                    :model/Measure
+                    :model/Segment
                     :model/Table
                     :model/User}}
 

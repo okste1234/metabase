@@ -5,8 +5,10 @@
   [[metabase.serialization.resolve]]) translates the references of a whole batch at once."
   (:refer-clojure :exclude [import load])
   (:require
+   [metabase.serialization.db :as serialization.db]
    [metabase.serialization.fk :as serialization.fk]
    [metabase.serialization.resolve :as resolve]
+   [metabase.serialization.resolve.app-db :as resolve.app-db]
    [metabase.util.namespaces :as shared.ns]))
 
 (shared.ns/import-fns
@@ -36,3 +38,20 @@
   target-not-found
   target-not-found?
   visit-some])
+
+(def batch-size
+  "The number of rows, ids or entities that serialization queries or processes together."
+  serialization.db/batch-size)
+
+(def export-resolver
+  "The export resolver backed by the application database."
+  resolve.app-db/export-resolver)
+
+(def lookup-resolver
+  "The import resolver backed by the application database that only looks references up, creating nothing."
+  resolve.app-db/lookup-resolver)
+
+(def import-resolver
+  "The import resolver backed by the application database, which creates the Users, Databases, Tables and Fields an
+  import refers to but this instance lacks."
+  resolve.app-db/import-resolver)
