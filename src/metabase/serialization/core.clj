@@ -6,9 +6,11 @@
   (:refer-clojure :exclude [import load])
   (:require
    [metabase.serialization.db :as serialization.db]
+   [metabase.serialization.dependencies :as serialization.dependencies]
    [metabase.serialization.export :as serialization.export]
    [metabase.serialization.extract :as serialization.extract]
    [metabase.serialization.fk :as serialization.fk]
+   [metabase.serialization.load :as serialization.load]
    [metabase.serialization.mbql :as serialization.mbql]
    [metabase.serialization.parameters :as serialization.parameters]
    [metabase.serialization.portable :as serialization.portable]
@@ -20,6 +22,17 @@
    [metabase.util.namespaces :as shared.ns]))
 
 (shared.ns/import-fns
+ [serialization.dependencies
+  export-dependencies
+  export-escapes
+  import-escapes
+  import-dependencies
+  export-mbql-dependencies
+  export-parameters-dependencies
+  export-visualization-settings-dependencies
+  import-mbql-dependencies
+  import-parameters-dependencies
+  import-visualization-settings-dependencies]
  [serialization.export
   export
   export-batch
@@ -61,6 +74,16 @@
   target-not-found
   target-not-found?
   visit-some]
+ [serialization.load
+  after-load
+  before-load
+  import
+  load
+  load-all
+  load-error
+  load-error?
+  load-order
+  local-rows]
  [serialization.mbql
   card-entity-id
   card-template-tag-export-rename

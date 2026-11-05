@@ -2639,9 +2639,11 @@
   serialization
   {:team "Data Apps"
    :api  #{}
-   :uses #{lib
+   :uses #{app-db
+           lib
            lib.legacy-mbql
            lib.schema
+           models
            util
            util.config}
    :model-imports #{:model/Card
