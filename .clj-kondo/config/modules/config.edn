@@ -2639,7 +2639,10 @@
   serialization
   {:team "Data Apps"
    :api  #{}
-   :uses #{lib.schema util}
+   :uses #{lib
+           lib.legacy-mbql
+           lib.schema
+           util}
    :model-imports #{:model/Card
                     :model/Collection
                     :model/Dashboard
@@ -2647,6 +2650,7 @@
                     :model/Document
                     :model/Field
                     :model/Measure
+                    :model/NativeQuerySnippet
                     :model/Segment
                     :model/Table
                     :model/User}}
