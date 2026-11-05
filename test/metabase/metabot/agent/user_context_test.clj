@@ -12,9 +12,9 @@
    [metabase.metabot.tools.shared.content-store :as shared.content-store]
    [metabase.metabot.tools.shared.llm-shape :as llm-shape]
    [metabase.models.interface :as mi]
-   [metabase.models.serialization.resolve.mp :as resolve.mp]
    [metabase.permissions.core :as perms]
    [metabase.permissions.models.permissions-group :as perms-group]
+   [metabase.serialization.resolve.mp :as resolve.mp]
    [metabase.test :as mt]
    [toucan2.core :as t2]))
 

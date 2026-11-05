@@ -1,7 +1,7 @@
-(ns metabase.models.serialization.resolve.mp
-  "Metadata-provider-backed implementations of the serdes resolver protocols.
+(ns metabase.serialization.resolve.mp
+  "Metadata-provider-backed implementations of the resolver protocols of [[metabase.serialization.resolve]].
 
-  Unlike `metabase.models.serialization.resolve.default`, this resolver does not touch toucan2 /
+  Unlike [[metabase.serialization.resolve.app-db]], this resolver does not touch toucan2 /
   the application database for *warehouse-schema* lookups (tables, fields) - it works off a
   `lib.metadata/MetadataProvider`, which may be the live application-DB-backed provider, a
   test-only mock provider, or any cached variant.
@@ -37,9 +37,9 @@
    [metabase.app-db.core :as mdb]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.lib.metadata.protocols :as lib.metadata.protocols]
-   [metabase.models.db :as models.db]
-   [metabase.models.serialization :as serdes]
-   [metabase.models.serialization.resolve :as resolve]
+   [metabase.serialization.db :as serialization.db]
+   [metabase.serialization.mbql :as mbql]
+   [metabase.serialization.resolve :as resolve]
    [metabase.util.i18n :refer [tru]]
    [potemkin.types :as p.types]))
 
@@ -85,7 +85,7 @@
   `001_update_migrations.yaml` `is_defective_duplicate` carve-out for pre-constraint rows)
   return more than one candidate so [[find-table]] can raise `:ambiguous-table`."
   [db-id schema table-name]
-  (models.db/metadata-tables db-id schema table-name))
+  (serialization.db/metadata-tables db-id schema table-name))
 
 (defn- app-db-backed-provider?
   "True when `metadata-provider` is part of the production app-DB-backed wrapper chain
@@ -194,7 +194,7 @@
 
   For regular (non-JSON-unfolded) fields, the path has exactly 4 elements and we match on name
   directly. For JSON-unfolded paths (5+ elements), we walk parent/child via `:parent-id` -
-  matching the behaviour of `serdes/recursively-find-field-q`."
+  following the Field's parents by name."
   [metadata-provider [db schema table-name & field-path :as full-path]]
   (when (empty? field-path)
     (throw (ex-info (tru "Portable field FK {0} must have at least 4 elements." (pr-str full-path))
@@ -283,17 +283,6 @@
 ;;; Content store - Metabase asset lookups by portable entity id or numeric id
 ;;; ============================================================
 
-#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
-(def ^:dynamic *audit-refusals?*
-  "Whether a permission-aware [[ContentStore]] audits a refusal, i.e. leaves the ERROR log line
-  and `:event/read-permission-failure` that `api/read-check` does, rather than throwing a bare
-  403. Bind to false around a lookup whose refusal you catch and discard.
-
-  The permission check itself is unaffected; an unreadable row never reaches the caller either
-  way. The stores defined below are permission-agnostic and ignore this var. It is honoured by
-  `metabase.metabot.tools.shared.content-store/read-checked`."
-  true)
-
 (p.types/defprotocol+ ContentStore
   "Lookup of Metabase content (\"assets\") by portable entity id or numeric id.
 
@@ -330,34 +319,34 @@
   `shared.content-store/default-store`, which is the wrapped form).
 
   Default [[ContentStore]] backed by the Metabase application database. Portable entity-id
-  lookups use `serdes/lookup-by-id`; numeric export lookups use direct Toucan selects. Use this
+  lookups use [[serialization.db/row-by-entity-id]]; numeric export lookups use direct Toucan selects. Use this
   in production code paths that already have an app DB; pass a different store implementation
   when running without one (checker, isolated tests).
 
-  Portable entity-id lookups are gated on [[resolve/entity-id?]]: LLM-authored values are
+  Portable entity-id lookups are gated on [[mbql/portable-id?]]: LLM-authored values are
   untrusted, so anything that isn't a 21-char NanoID short-circuits to `nil` and the caller
   surfaces a clear `:unknown-…` agent error."
   (reify ContentStore
     (card-by-entity-id [_ entity-id]
-      (when (resolve/entity-id? entity-id)
-        (serdes/lookup-by-id 'Card entity-id)))
+      (when (mbql/portable-id? entity-id)
+        (serialization.db/row-by-entity-id :model/Card entity-id)))
     (measure-by-entity-id [_ entity-id]
-      (when (resolve/entity-id? entity-id)
-        (serdes/lookup-by-id 'Measure entity-id)))
+      (when (mbql/portable-id? entity-id)
+        (serialization.db/row-by-entity-id :model/Measure entity-id)))
     (segment-by-entity-id [_ entity-id]
-      (when (resolve/entity-id? entity-id)
-        (serdes/lookup-by-id 'Segment entity-id)))
+      (when (mbql/portable-id? entity-id)
+        (serialization.db/row-by-entity-id :model/Segment entity-id)))
     (card-by-id [_ card-id]
       (when (int? card-id)
         ;; `api/read-check` for Cards needs only the parent collection. Avoid loading and
         ;; transforming the entire dataset_query just to export one stable identifier.
-        (models.db/card-serdes-columns card-id)))
+        (serialization.db/card-serdes-columns card-id)))
     (measure-by-id [_ measure-id]
       (when measure-id
-        (models.db/measure-serdes-columns measure-id)))
+        (serialization.db/measure-serdes-columns measure-id)))
     (segment-by-id [_ segment-id]
       (when segment-id
-        (models.db/segment-serdes-columns segment-id)))))
+        (serialization.db/segment-serdes-columns segment-id)))))
 
 ;;; ============================================================
 ;;; Resolver implementations
@@ -399,13 +388,13 @@
                          :expected-id (:id current-db)}))))))
 
 (defn- card-model? [model]
-  (or (= model 'Card) (= model :model/Card)))
+  (= model :model/Card))
 
 (defn- measure-model? [model]
-  (or (= model 'Measure) (= model :model/Measure)))
+  (= model :model/Measure))
 
 (defn- segment-model? [model]
-  (or (= model 'Segment) (= model :model/Segment)))
+  (= model :model/Segment))
 
 (defn- table-belongs-to-current-database?
   "True when the table with `table-id` is known to the metadata provider — measures and segments
@@ -727,105 +716,89 @@
       :else
       (:id segment))))
 
+(defn- found
+  "The map from each of `inputs` to what `f` finds for it, leaving out the ones it finds nothing for."
+  [f inputs]
+  (into {} (keep (fn [input] (when-some [v (f input)] [input v]))) (distinct inputs)))
+
 (defn import-resolver
-  "Build a `SerdesImportResolver` backed by `metadata-provider` (warehouse metadata) and
-  `content-store` (Metabase content / assets).
+  "An [[resolve/ImportResolver]] backed by `metadata-provider` (warehouse metadata) and `content-store` (Metabase
+  content / assets), which resolves Databases, Tables, Fields, and Cards, Measures and Segments by entity id or, on
+  the numeric-id surface, by id; any other reference throws `:not-implemented-yet`.
 
-  The 1-arity form uses [[unchecked-app-db-content-store]] - i.e. it goes through
-  `serdes/lookup-by-id` for content lookups and therefore requires the application database.
-  **Note the \"unchecked\" prefix:** the default store does NOT apply `api/read-check`. HTTP /
-  tool paths that run under an authenticated user must pass an explicit content-store wrapped
-  with `metabase.metabot.tools.shared.content-store/read-checked`.
-
-  Implemented methods:
-    * `import-database-fk`, `import-table-fk`, `import-field-fk`.
-    * `import-fk` for `Card`, `Measure`, and `Segment` by `entity_id`.
-
-  Other methods throw `:not-implemented-yet`."
+  The 1-arity form uses [[unchecked-app-db-content-store]], which does NOT apply `api/read-check`. HTTP / tool paths
+  that run under an authenticated user must pass an explicit content-store wrapped with
+  `metabase.metabot.tools.shared.content-store/read-checked`."
   ([metadata-provider]
    (import-resolver metadata-provider unchecked-app-db-content-store))
   ([metadata-provider content-store]
-   (reify resolve/SerdesImportResolver
-     (import-fk       [_ eid model]
-       (cond
-         (nil? eid)             nil
-         ;; A bare numeric id, which only the numeric-id surface may author. It needs no
-         ;; translation, but it still has to go through the (read-checked) content store —
-         ;; see [[import-card-by-id]]. Every content model gets this, not just Card: a numeric
-         ;; metric / segment / measure ref reaches the resolver by exactly the same route.
-         (int? eid)
-         (cond
-           (card-model? model)    (import-card-by-id metadata-provider content-store eid)
-           (measure-model? model) (import-measure-by-id metadata-provider content-store eid)
-           (segment-model? model) (import-segment-by-id metadata-provider content-store eid)
-           :else                  (not-implemented! :import-fk))
+   (let [import-fk (fn [model eid]
+                     (cond
+                       (int? eid)
+                       (cond
+                         (card-model? model)    (import-card-by-id metadata-provider content-store eid)
+                         (measure-model? model) (import-measure-by-id metadata-provider content-store eid)
+                         (segment-model? model) (import-segment-by-id metadata-provider content-store eid)
+                         :else                  (not-implemented! :import-fk))
 
-         (card-model? model)    (import-card-by-entity-id metadata-provider content-store eid)
-         (measure-model? model) (import-measure-by-entity-id metadata-provider content-store eid)
-         (segment-model? model) (import-segment-by-entity-id metadata-provider content-store eid)
-         :else                  (not-implemented! :import-fk)))
-     (import-fk-keyed [_ _portable _model _field] (not-implemented! :import-fk-keyed))
-     (import-user     [_ _email]                  (not-implemented! :import-user))
-     (import-database-fk [_ db-name]
-       (when db-name
-         (import-database-by-name metadata-provider db-name)))
-     (import-table-fk [_ path]
-       (when path
-         (:id (find-table metadata-provider path))))
-     (import-field-fk [_ path]
-       (when path
-         (:id (find-field metadata-provider path)))))))
+                       (card-model? model)    (import-card-by-entity-id metadata-provider content-store eid)
+                       (measure-model? model) (import-measure-by-entity-id metadata-provider content-store eid)
+                       (segment-model? model) (import-segment-by-entity-id metadata-provider content-store eid)
+                       :else                  (not-implemented! :import-fk)))]
+     (reify resolve/ImportResolver
+       (entity-pks [_ model eids]
+         (found #(import-fk model %) (remove nil? eids)))
+       (pks-by-field [_ _model _field _values]
+         (not-implemented! :import-fk-keyed))
+       (user-ids [_ _emails]
+         (not-implemented! :import-user))
+       (database-ids [_ db-names]
+         (found #(import-database-by-name metadata-provider %) (remove nil? db-names)))
+       (table-ids [_ paths]
+         (found #(:id (find-table metadata-provider %)) (remove nil? paths)))
+       (field-ids [_ paths]
+         (found #(:id (find-field metadata-provider %)) (remove nil? paths)))))))
 
 (defn export-resolver
-  "Build a `SerdesExportResolver` backed by `metadata-provider` and `content-store`.
+  "An [[resolve/ExportResolver]] backed by `metadata-provider` and `content-store`, which resolves Tables, Fields,
+  Database names, and the entity ids of Cards, Measures and Segments; any other reference throws
+  `:not-implemented-yet`, and a Table or Field id that `metadata-provider` does not have throws a 400.
 
-  The 1-arity form uses [[unchecked-app-db-content-store]]. Agent-facing callers must pass
-  an explicit permission-aware store so exported content entity IDs are read-checked.
-
-  Implemented methods:
-    * `export-table-fk`, `export-field-fk` for warehouse metadata.
-    * `export-fk-keyed` for `:model/Database` by `:name`.
-    * `export-fk` for `Card` / `:model/Card` by `entity_id` (source-card and metric refs).
-    * `export-fk` for `:model/Measure` and `:model/Segment` by `entity_id`.
-
-  Other methods throw `:not-implemented-yet`."
+  The 1-arity form uses [[unchecked-app-db-content-store]]. Agent-facing callers must pass an explicit
+  permission-aware store so exported content entity IDs are read-checked."
   ([metadata-provider]
    (export-resolver metadata-provider unchecked-app-db-content-store))
   ([metadata-provider content-store]
-   (reify resolve/SerdesExportResolver
-     (export-fk       [_ id model]
-       (cond
-         (nil? id)              nil
-         (card-model? model)    (export-card-by-id metadata-provider content-store id)
-         (measure-model? model) (export-measure-by-id metadata-provider content-store id)
-         (segment-model? model) (export-segment-by-id metadata-provider content-store id)
-         :else                  (not-implemented! :export-fk)))
-     (export-fk-keyed [_ id model field]
-       (cond
-         (nil? id) nil
-
-         (and (or (= model :model/Database) (= model 'Database))
-              (= field :name))
-         (export-database-name metadata-provider id)
-
-         :else
+   (reify resolve/ExportResolver
+     (entity-ids [_ model ids]
+       (found (fn [id]
+                (cond
+                  (card-model? model)    (export-card-by-id metadata-provider content-store id)
+                  (measure-model? model) (export-measure-by-id metadata-provider content-store id)
+                  (segment-model? model) (export-segment-by-id metadata-provider content-store id)
+                  :else                  (not-implemented! :export-fk)))
+              (remove nil? ids)))
+     (field-values [_ model field ids]
+       (if (and (= model :model/Database) (= field :name))
+         (found #(export-database-name metadata-provider %) (remove nil? ids))
          (not-implemented! :export-fk-keyed)))
-     (export-user     [_ _id]               (not-implemented! :export-user))
-     (export-table-fk [_ table-id]
-       (when table-id
-         (let [t (lib.metadata.protocols/table metadata-provider table-id)]
-           (when-not t
-             (throw (ex-info (tru "No table found with id {0}." (str table-id))
-                             {:status-code 400
-                              :error       :unknown-table-id
-                              :table-id    table-id})))
-           [(db-name metadata-provider) (:schema t) (:name t)])))
-     (export-field-fk [_ field-id]
-       (when field-id
-         (let [f (lib.metadata.protocols/field metadata-provider field-id)]
-           (when-not f
-             (throw (ex-info (tru "No field found with id {0}." (str field-id))
-                             {:status-code 400
-                              :error       :unknown-field-id
-                              :field-id    field-id})))
-           (export-field-path metadata-provider f)))))))
+     (table-refs [_ table-ids]
+       (found (fn [table-id]
+                (let [t (lib.metadata.protocols/table metadata-provider table-id)]
+                  (when-not t
+                    (throw (ex-info (tru "No table found with id {0}." (str table-id))
+                                    {:status-code 400
+                                     :error       :unknown-table-id
+                                     :table-id    table-id})))
+                  [(db-name metadata-provider) (:schema t) (:name t)]))
+              (remove nil? table-ids)))
+     (field-refs [_ field-ids]
+       (found (fn [field-id]
+                (let [f (lib.metadata.protocols/field metadata-provider field-id)]
+                  (when-not f
+                    (throw (ex-info (tru "No field found with id {0}." (str field-id))
+                                    {:status-code 400
+                                     :error       :unknown-field-id
+                                     :field-id    field-id})))
+                  (export-field-path metadata-provider f)))
+              (remove nil? field-ids))))))

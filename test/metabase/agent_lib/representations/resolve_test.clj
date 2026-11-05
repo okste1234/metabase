@@ -23,7 +23,7 @@
    [metabase.lib.metadata :as lib.metadata]
    [metabase.lib.schema :as lib.schema]
    [metabase.lib.test-util :as lib.tu]
-   [metabase.models.serialization.resolve.mp :as resolve.mp]
+   [metabase.serialization.resolve.mp :as resolve.mp]
    [metabase.util.malli.registry :as mr]))
 
 (set! *warn-on-reflection* true)

@@ -15,7 +15,7 @@
   3. **Only the audit trail varies**: the `-by-entity-id` methods use the audited
      [[api/read-check]], the `-by-id` methods an unaudited [[mi/can-read?]] +
      [[api/check-403]] unless `audited-by-id?` is set, and binding
-     [[resolve.mp/*audit-refusals?*]] to false suppresses auditing on all six.
+     [[shared.content-store/*audit-refusals?*]] to false suppresses auditing on all six.
 
   4. **`repair` binds that suppression on**: the `source-card` refusals its mini-resolve passes
      catch and discard stay out of the audit trail."
@@ -31,10 +31,10 @@
    [metabase.metabot.test-util :as test-util]
    [metabase.metabot.tools.shared.content-store :as shared.content-store]
    [metabase.models.interface :as mi]
-   [metabase.models.serialization.resolve :as resolve]
-   [metabase.models.serialization.resolve.mp :as resolve.mp]
    [metabase.permissions.core :as perms]
    [metabase.permissions.models.permissions-group :as perms-group]
+   [metabase.serialization.resolve :as serialization.resolve]
+   [metabase.serialization.resolve.mp :as resolve.mp]
    [metabase.test :as mt]
    [toucan2.protocols :as t2.protocols]))
 
@@ -180,7 +180,7 @@
           (mt/with-dynamic-fn-redefs [api/read-check (fn [& _]
                                                        (is false "api/read-check ran with auditing suppressed"))]
             (binding [api/*current-user-id*            1
-                      resolve.mp/*audit-refusals?*     false]
+                      shared.content-store/*audit-refusals?*     false]
               (doseq [[lookup arg] all-lookups]
                 (binding [*stub-can-read?* true]
                   (is (= row (lookup gated arg))))
@@ -265,7 +265,7 @@
                                                    (is false "api/read-check ran on a refusal repair discards"))]
         (binding [api/*current-user-id*        1
                   *stub-can-read?*             false
-                  resolve.mp/*audit-refusals?* false]
+                  shared.content-store/*audit-refusals?* false]
           (let [repaired (repr.repair/repair mp query (shared.content-store/read-checked store))]
             (is (pos? @lookups) "precondition: repair looked the source card up")
             (is (= source-card-entity-id (get-in repaired ["stages" 0 "source-card"]))
@@ -377,7 +377,7 @@
       (let [resolver (resolve.mp/export-resolver
                       (lib-be/application-database-metadata-provider (mt/id))
                       shared.content-store/default-store)
-            export!  #(resolve/export-fk resolver card-id 'Card)]
+            export!  #(get (serialization.resolve/entity-ids resolver :model/Card [card-id]) card-id)]
         (testing "a user who can read the source Card gets its entity_id"
           (mt/with-current-user (mt/user->id :crowberto)
             (is (= entity-id (export!)))))

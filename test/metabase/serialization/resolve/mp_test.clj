@@ -1,19 +1,16 @@
-(ns metabase.models.serialization.resolve.mp-test
-  "Tests for the metadata-provider-backed serdes resolver.
-
-  Covers the Phase-1 scope: `import-table-fk`, `import-field-fk`, `export-table-fk`,
-  `export-field-fk`, and the error paths for unknown / ambiguous / missing targets.
-
-  Phase-2 additions (step 11): `import-fk` for `Card` by entity_id."
+(ns metabase.serialization.resolve.mp-test
+  "Tests for the metadata-provider-backed resolver."
   (:require
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing use-fixtures]]
    [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
+   [metabase.lib.metadata :as lib.metadata]
    [metabase.lib.metadata.protocols :as lib.metadata.protocols]
    [metabase.lib.test-util :as lib.tu]
-   [metabase.models.serialization.resolve :as resolve]
-   [metabase.models.serialization.resolve.mp :as resolve.mp]
+   [metabase.serialization.core :as serialization]
+   [metabase.serialization.resolve :as resolve]
+   [metabase.serialization.resolve.mp :as resolve.mp]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]
    [toucan2.core :as t2]))
@@ -99,6 +96,14 @@
                 :type        :metric
                 :entity-id   metric-entity-id}]}))
 
+(defn- import-table [r path] (get (resolve/table-ids r [path]) path))
+(defn- import-field [r path] (get (resolve/field-ids r [path]) path))
+(defn- import-pk [r model eid] (get (resolve/entity-pks r model [eid]) eid))
+(defn- export-table [r id] (get (resolve/table-refs r [id]) id))
+(defn- export-field [r id] (get (resolve/field-refs r [id]) id))
+(defn- export-eid [r model id] (get (resolve/entity-ids r model [id]) id))
+(defn- export-db-name [r id] (get (resolve/field-values r :model/Database :name [id]) id))
+
 (def ^:private cards-content-store
   "Serves the [[mp-with-cards]] cards by numeric id. Card export reads `entity_id` through a
   ContentStore rather than the permission-agnostic metadata provider, so a provider-only
@@ -120,18 +125,18 @@
 (deftest ^:parallel import-table-fk-test
   (testing "happy path"
     (let [r (resolve.mp/import-resolver mp-simple)]
-      (is (= 10 (resolve/import-table-fk r ["Sample" "PUBLIC" "ORDERS"])))
-      (is (= 11 (resolve/import-table-fk r ["Sample" "PUBLIC" "PRODUCTS"])))))
+      (is (= 10 (import-table r ["Sample" "PUBLIC" "ORDERS"])))
+      (is (= 11 (import-table r ["Sample" "PUBLIC" "PRODUCTS"])))))
   (testing "nil input returns nil"
     (let [r (resolve.mp/import-resolver mp-simple)]
-      (is (nil? (resolve/import-table-fk r nil)))))
+      (is (nil? (import-table r nil)))))
   (testing "schemaless: nil schema slot matches real null schema"
     (let [r (resolve.mp/import-resolver mp-schemaless)]
-      (is (= 20 (resolve/import-table-fk r ["Mongo" nil "orders"])))))
+      (is (= 20 (import-table r ["Mongo" nil "orders"])))))
   (testing "schema disambiguation: same name in two schemas"
     (let [r (resolve.mp/import-resolver mp-ambiguous-by-schema)]
-      (is (= 30 (resolve/import-table-fk r ["DW" "RAW"   "ORDERS"])))
-      (is (= 31 (resolve/import-table-fk r ["DW" "CLEAN" "ORDERS"]))))))
+      (is (= 30 (import-table r ["DW" "RAW"   "ORDERS"])))
+      (is (= 31 (import-table r ["DW" "CLEAN" "ORDERS"]))))))
 
 (deftest import-table-fk-cache-collision-test
   (testing "two real tables sharing a name across schemas: app-DB-backed resolver must not drop either"
@@ -155,8 +160,8 @@
                    :model/Table    clean-orders {:name "ORDERS" :schema "CLEAN" :db_id (:id db)}]
       (let [mp (lib-be/application-database-metadata-provider (:id db))
             r  (resolve.mp/import-resolver mp)]
-        (is (= (:id raw-orders)   (resolve/import-table-fk r [(:name db) "RAW"   "ORDERS"])))
-        (is (= (:id clean-orders) (resolve/import-table-fk r [(:name db) "CLEAN" "ORDERS"])))))))
+        (is (= (:id raw-orders)   (import-table r [(:name db) "RAW"   "ORDERS"])))
+        (is (= (:id clean-orders) (import-table r [(:name db) "CLEAN" "ORDERS"])))))))
 
 (deftest import-table-fk-inactive-table-test
   (testing "a portable FK to an inactive table (deleted / re-uploaded CSV) must NOT resolve"
@@ -169,7 +174,7 @@
       (let [mp (lib-be/application-database-metadata-provider (:id db))
             r  (resolve.mp/import-resolver mp)]
         (try
-          (resolve/import-table-fk r [(:name db) "PUBLIC" "metabot2_38513168ae9131"])
+          (import-table r [(:name db) "PUBLIC" "metabot2_38513168ae9131"])
           (is false "expected throw")
           (catch clojure.lang.ExceptionInfo e
             (let [d   (ex-data e)
@@ -182,7 +187,7 @@
               (is (not (re-find #"read_resource|browse_data" msg))
                   "the resolver states the miss; the calling surface owns the recovery sentence")
               (testing "inactive-row miss is indistinguishable from a never-existed miss (no oracle)"
-                (let [never-existed (try (resolve/import-table-fk r [(:name db) "PUBLIC" "never_existed_xyz"])
+                (let [never-existed (try (import-table r [(:name db) "PUBLIC" "never_existed_xyz"])
                                          (catch clojure.lang.ExceptionInfo e2 (.getMessage e2)))]
                   ;; same wording modulo the echoed portable FK (which the caller supplied either way)
                   (is (= (str/replace msg #"\[.*?\]" "[FK]")
@@ -204,14 +209,14 @@
                       mp {:lib/type :metadata/table :name #{"metabot2_cafef00dbabe01"}})]
         (testing "warm the provider's by-name cache while the table is still active"
           (is (= [true] (mapv :active (by-name))))
-          (is (= (:id gone) (resolve/import-table-fk r [(:name db) "PUBLIC" "metabot2_cafef00dbabe01"]))))
+          (is (= (:id gone) (import-table r [(:name db) "PUBLIC" "metabot2_cafef00dbabe01"]))))
         (t2/update! :model/Table :id (:id gone) {:active false})
         (testing "the cache still surfaces the stale ACTIVE row by name"
           (is (= [true] (mapv :active (by-name)))))
         (testing "...but import-table-fk misses: the app DB sees the inactive row, no stale-cache fallback"
           (is (thrown-with-msg?
                clojure.lang.ExceptionInfo #"No table found matching portable FK"
-               (resolve/import-table-fk r [(:name db) "PUBLIC" "metabot2_cafef00dbabe01"]))))))))
+               (import-table r [(:name db) "PUBLIC" "metabot2_cafef00dbabe01"]))))))))
 
 (deftest matching-tables-via-provider-drops-inactive-test
   (testing "matching-tables-via-provider filters the inactive rows the provider surfaces by name"
@@ -234,7 +239,7 @@
   (testing "unknown table name → :unknown-table, agent-error?, 400, no info leak"
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-table-fk r ["Sample" "PUBLIC" "NOPE"])
+        (import-table r ["Sample" "PUBLIC" "NOPE"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d   (ex-data e)
@@ -258,7 +263,7 @@
     ;; schemas they lack perms on.
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-table-fk r ["Sample" "OTHER" "ORDERS"])
+        (import-table r ["Sample" "OTHER" "ORDERS"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d   (ex-data e)
@@ -280,7 +285,7 @@
                           {:id 51 :name "PRODUCTS" :schema "CLEAN" :db-id 5}]})
           r  (resolve.mp/import-resolver mp)]
       (try
-        (resolve/import-table-fk r ["DW2" "CLEAN" "ORDERS"])
+        (import-table r ["DW2" "CLEAN" "ORDERS"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d   (ex-data e)
@@ -294,7 +299,7 @@
   (testing "database name mismatch"
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-table-fk r ["Different" "PUBLIC" "ORDERS"])
+        (import-table r ["Different" "PUBLIC" "ORDERS"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d (ex-data e)]
@@ -308,7 +313,7 @@
     ;; for an `ORDER` hallucination. Post-S1 nothing is suggested.
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-table-fk r ["Sample" "PUBLIC" "ORDER"])
+        (import-table r ["Sample" "PUBLIC" "ORDER"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d   (ex-data e)
@@ -326,38 +331,38 @@
 (deftest ^:parallel import-field-fk-test
   (testing "happy path"
     (let [r (resolve.mp/import-resolver mp-simple)]
-      (is (= 100 (resolve/import-field-fk r ["Sample" "PUBLIC" "ORDERS"   "ID"])))
-      (is (= 101 (resolve/import-field-fk r ["Sample" "PUBLIC" "ORDERS"   "TOTAL"])))
-      (is (= 111 (resolve/import-field-fk r ["Sample" "PUBLIC" "PRODUCTS" "CATEGORY"])))))
+      (is (= 100 (import-field r ["Sample" "PUBLIC" "ORDERS"   "ID"])))
+      (is (= 101 (import-field r ["Sample" "PUBLIC" "ORDERS"   "TOTAL"])))
+      (is (= 111 (import-field r ["Sample" "PUBLIC" "PRODUCTS" "CATEGORY"])))))
   (testing "schemaless"
     (let [r (resolve.mp/import-resolver mp-schemaless)]
-      (is (= 200 (resolve/import-field-fk r ["Mongo" nil "orders" "total"])))))
+      (is (= 200 (import-field r ["Mongo" nil "orders" "total"])))))
   (testing "nil input returns nil"
     (let [r (resolve.mp/import-resolver mp-simple)]
-      (is (nil? (resolve/import-field-fk r nil)))))
+      (is (nil? (import-field r nil)))))
   (testing "JSON-unfolded nested field walks parent-id chain"
     (let [r (resolve.mp/import-resolver mp-nested)]
-      (is (= 401 (resolve/import-field-fk r ["Nested" "PUBLIC" "ORDERS" "META" "vendor"]))))))
+      (is (= 401 (import-field r ["Nested" "PUBLIC" "ORDERS" "META" "vendor"]))))))
 
 (deftest ^:parallel import-field-fk-error-test
   (testing "unknown field"
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-field-fk r ["Sample" "PUBLIC" "ORDERS" "NOPE"])
+        (import-field r ["Sample" "PUBLIC" "ORDERS" "NOPE"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (is (= :unknown-field (:error (ex-data e))))))))
   (testing "unknown table (bubbles up through find-table)"
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-field-fk r ["Sample" "PUBLIC" "GHOST" "ID"])
+        (import-field r ["Sample" "PUBLIC" "GHOST" "ID"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (is (= :unknown-table (:error (ex-data e))))))))
   (testing "short field FK (missing field segment)"
     (let [r (resolve.mp/import-resolver mp-simple)]
       (try
-        (resolve/import-field-fk r ["Sample" "PUBLIC" "ORDERS"])
+        (import-field r ["Sample" "PUBLIC" "ORDERS"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (is (= :invalid-field-fk (:error (ex-data e)))))))))
@@ -369,7 +374,7 @@
     ;; existence of PRODUCTS to anyone whose data perms exclude that table.
     (let [r (resolve.mp/import-resolver mp-with-fk)]
       (try
-        (resolve/import-field-fk r ["Sample" "PUBLIC" "ORDERS" "CATEGORY"])
+        (import-field r ["Sample" "PUBLIC" "ORDERS" "CATEGORY"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d   (ex-data e)
@@ -383,7 +388,7 @@
   (testing "unknown field also doesn't leak when no FK-reachable table has the column"
     (let [r (resolve.mp/import-resolver mp-with-fk)]
       (try
-        (resolve/import-field-fk r ["Sample" "PUBLIC" "ORDERS" "NOT_ANYWHERE"])
+        (import-field r ["Sample" "PUBLIC" "ORDERS" "NOT_ANYWHERE"])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d (ex-data e)]
@@ -398,15 +403,15 @@
 (deftest ^:parallel export-table-fk-test
   (testing "happy path"
     (let [r (resolve.mp/export-resolver mp-simple)]
-      (is (= ["Sample" "PUBLIC" "ORDERS"]   (resolve/export-table-fk r 10)))
-      (is (= ["Sample" "PUBLIC" "PRODUCTS"] (resolve/export-table-fk r 11)))))
+      (is (= ["Sample" "PUBLIC" "ORDERS"]   (export-table r 10)))
+      (is (= ["Sample" "PUBLIC" "PRODUCTS"] (export-table r 11)))))
   (testing "nil returns nil"
     (let [r (resolve.mp/export-resolver mp-simple)]
-      (is (nil? (resolve/export-table-fk r nil)))))
+      (is (nil? (export-table r nil)))))
   (testing "unknown id throws"
     (let [r (resolve.mp/export-resolver mp-simple)]
       (try
-        (resolve/export-table-fk r 9999)
+        (export-table r 9999)
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (is (= :unknown-table-id (:error (ex-data e)))))))))
@@ -414,57 +419,49 @@
 (deftest ^:parallel export-field-fk-test
   (testing "happy path"
     (let [r (resolve.mp/export-resolver mp-simple)]
-      (is (= ["Sample" "PUBLIC" "ORDERS" "TOTAL"] (resolve/export-field-fk r 101)))))
+      (is (= ["Sample" "PUBLIC" "ORDERS" "TOTAL"] (export-field r 101)))))
   (testing "schemaless"
     (let [r (resolve.mp/export-resolver mp-schemaless)]
-      (is (= ["Mongo" nil "orders" "total"] (resolve/export-field-fk r 200)))))
+      (is (= ["Mongo" nil "orders" "total"] (export-field r 200)))))
   (testing "JSON-unfolded field"
     (let [r (resolve.mp/export-resolver mp-nested)]
       (is (= ["Nested" "PUBLIC" "ORDERS" "META" "vendor"]
-             (resolve/export-field-fk r 401)))))
+             (export-field r 401)))))
   (testing "round-trip: import then export"
     (let [ir (resolve.mp/import-resolver mp-simple)
           er (resolve.mp/export-resolver mp-simple)
           path ["Sample" "PUBLIC" "ORDERS" "PRODUCT_ID"]]
-      (is (= path (resolve/export-field-fk er (resolve/import-field-fk ir path)))))))
+      (is (= path (export-field er (import-field ir path)))))))
 
 (deftest ^:parallel export-database-and-card-fks-test
   (let [r (resolve.mp/export-resolver mp-with-cards cards-content-store)]
     (testing "database id exports to the provider's database name"
-      (is (= "Sample" (resolve/export-fk-keyed r 1 :model/Database :name)))
-      (is (= "Sample" (resolve/export-fk-keyed r 1 'Database :name))))
+      (is (= "Sample" (export-db-name r 1))))
     (testing "Card ids export to entity_ids for both source-card and metric refs"
-      (is (= card-entity-id (resolve/export-fk r 500 :model/Card)))
-      (is (= card-entity-id (resolve/export-fk r 500 'Card)))
-      (is (= metric-entity-id (resolve/export-fk r 501 'Card))))
-    (testing "nil inputs return nil"
-      (is (nil? (resolve/export-fk r nil 'Card)))
-      (is (nil? (resolve/export-fk-keyed r nil :model/Database :name))))))
+      (is (= {500 card-entity-id, 501 metric-entity-id}
+             (resolve/entity-ids r :model/Card [500 501]))))
+    (testing "nil inputs are left out"
+      (is (= {} (resolve/entity-ids r :model/Card [nil])))
+      (is (= {} (resolve/field-values r :model/Database :name [nil]))))))
 
 (deftest ^:parallel export-mbql-with-mp-resolver-round-trip-shape-test
   (testing "final numeric MBQL 5 exports back to portable DB/table/field/card references"
     (let [r        (resolve.mp/export-resolver mp-with-cards cards-content-store)
-          exported (resolve/export-mbql
-                    r
-                    {:lib/type :mbql/query
-                     :database 1
-                     :stages   [{:lib/type     :mbql.stage/mbql
-                                 :source-table 10
-                                 :fields       [[:field {} 101]]
-                                 :aggregation  [[:metric {} 501]]}]})]
+          query    (-> (lib/query mp-with-cards (lib.metadata/table mp-with-cards 10))
+                       (lib/with-fields [(lib.metadata/field mp-with-cards 101)])
+                       (lib/aggregate (lib.metadata/metric mp-with-cards 501)))
+          exported (first (serialization/export-mbql r [query]))]
       (is (= "Sample" (:database exported)))
       (is (= ["Sample" "PUBLIC" "ORDERS"]
              (get-in exported [:stages 0 :source-table])))
       (is (= ["Sample" "PUBLIC" "ORDERS" "TOTAL"]
              (get-in exported [:stages 0 :fields 0 2])))
       (is (= metric-entity-id
-             (get-in exported [:stages 0 :aggregation 0 2])))
-      (is (string? (get-in exported [:stages 0 :fields 0 1 :lib/uuid])))
-      (is (string? (get-in exported [:stages 0 :aggregation 0 1 :lib/uuid])))))
+             (get-in exported [:stages 0 :aggregation 0 2])))))
   (testing "source-card map keys export through the Card entity_id path"
     (let [r (resolve.mp/export-resolver mp-with-cards cards-content-store)]
       (is (= {:source-card card-entity-id}
-             (resolve/export-mbql r {:source-card 500}))))))
+             (first (serialization/export-mbql r [{:source-card 500}])))))))
 
 (deftest ^:parallel export-import-mbql-table-template-tag-test
   (let [query    (-> (lib/native-query mp-simple "SELECT * FROM {{orders}}")
@@ -473,13 +470,13 @@
                                                         :display-name "Orders"
                                                         :type         :table
                                                         :table-id     10}}))
-        exported (resolve/export-mbql (resolve.mp/export-resolver mp-simple) query)]
+        exported (first (serialization/export-mbql (resolve.mp/export-resolver mp-simple) [query]))]
     (testing "table template tag exports its table as portable path"
       (is (= ["Sample" "PUBLIC" "ORDERS"]
              (get-in exported [:stages 0 :template-tags 0 :table-id]))))
     (testing "portable table path imports back to numeric table id"
       (is (= 10
-             (get-in (resolve/import-mbql (resolve.mp/import-resolver mp-simple) exported)
+             (get-in (first (serialization/import-mbql (resolve.mp/import-resolver mp-simple) [exported]))
                      [:stages 0 :template-tags 0 :table-id]))))))
 
 ;;; ============================================================
@@ -490,13 +487,13 @@
   (let [er (resolve.mp/export-resolver mp-simple)]
     (testing "export-fk for non-(Card/Measure/Segment) models still throws :not-implemented-yet"
       (try
-        (resolve/export-fk er 1 'NativeQuerySnippet)
+        (export-eid er :model/NativeQuerySnippet 1)
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (is (= :not-implemented-yet (:error (ex-data e)))))))
     (testing "export-fk-keyed for non-database keys still throws :not-implemented-yet"
       (try
-        (resolve/export-fk-keyed er 1 :model/Card :name)
+        (resolve/field-values er :model/Card :name [1])
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (is (= :not-implemented-yet (:error (ex-data e)))))))))
@@ -514,14 +511,12 @@
                                     :query    {:source-table (mt/id :orders)}}}]
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             ir (resolve.mp/import-resolver mp)]
-        (is (= card-id (resolve/import-fk ir card-eid 'Card)))
-        (testing "also accepts keyword-qualified model name :model/Card"
-          (is (= card-id (resolve/import-fk ir card-eid :model/Card))))))))
+        (is (= card-id (import-pk ir :model/Card card-eid)))))))
 
 (deftest ^:parallel import-fk-card-nil-input-returns-nil-test
   (testing "nil entity_id returns nil (matches table/field FK contract)"
     (let [ir (resolve.mp/import-resolver mp-simple)]
-      (is (nil? (resolve/import-fk ir nil 'Card))))))
+      (is (nil? (import-pk ir :model/Card nil))))))
 
 (deftest import-fk-card-unknown-test
   (testing "unknown entity_id throws :agent-error? with :unknown-card code"
@@ -529,7 +524,7 @@
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             ir (resolve.mp/import-resolver mp)]
         (try
-          (resolve/import-fk ir "nonexistent_entity_id1" 'Card)
+          (import-pk ir :model/Card "nonexistent_entity_id1")
           (is false "expected throw")
           (catch clojure.lang.ExceptionInfo e
             (let [d (ex-data e)]
@@ -548,7 +543,7 @@
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             ir (resolve.mp/import-resolver mp)]
         (try
-          (resolve/import-fk ir card-eid 'Card)
+          (import-pk ir :model/Card card-eid)
           (is false "expected throw")
           (catch clojure.lang.ExceptionInfo e
             (let [d (ex-data e)]
@@ -572,8 +567,7 @@
                                            :aggregation [[:count {:lib/uuid (str (random-uuid))}]]}]}}]
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             ir (resolve.mp/import-resolver mp)]
-        (is (= measure-id (resolve/import-fk ir measure-eid 'Measure)))
-        (is (= measure-id (resolve/import-fk ir measure-eid :model/Measure)))))))
+        (is (= measure-id (import-pk ir :model/Measure measure-eid)))))))
 
 (deftest ^:parallel import-fk-segment-happy-path-test
   (testing "resolves a segment's entity_id to its numeric id when the segment's table is in the same database"
@@ -595,8 +589,7 @@
                                                         [:field {:lib/uuid (str (random-uuid))} total-id]
                                                         100]]}]}}]
         (let [ir (resolve.mp/import-resolver mp)]
-          (is (= segment-id (resolve/import-fk ir segment-eid 'Segment)))
-          (is (= segment-id (resolve/import-fk ir segment-eid :model/Segment))))))))
+          (is (= segment-id (import-pk ir :model/Segment segment-eid))))))))
 
 (deftest import-fk-measure-unknown-test
   (testing "unknown measure entity_id throws :unknown-measure with :agent-error?"
@@ -604,7 +597,7 @@
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             ir (resolve.mp/import-resolver mp)]
         (try
-          (resolve/import-fk ir "nonexistent_measure_id_x" 'Measure)
+          (import-pk ir :model/Measure "nonexistent_measure_id_x")
           (is false "expected throw")
           (catch clojure.lang.ExceptionInfo e
             (let [d (ex-data e)]
@@ -618,7 +611,7 @@
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             ir (resolve.mp/import-resolver mp)]
         (try
-          (resolve/import-fk ir "nonexistent_segment_id_x" 'Segment)
+          (import-pk ir :model/Segment "nonexistent_segment_id_x")
           (is false "expected throw")
           (catch clojure.lang.ExceptionInfo e
             (let [d (ex-data e)]
@@ -637,8 +630,7 @@
                                            :aggregation [[:count {:lib/uuid (str (random-uuid))}]]}]}}]
       (let [mp (lib-be/application-database-metadata-provider (mt/id))
             er (resolve.mp/export-resolver mp)]
-        (is (= measure-eid (resolve/export-fk er measure-id 'Measure)))
-        (is (= measure-eid (resolve/export-fk er measure-id :model/Measure)))))))
+        (is (= measure-eid (export-eid er :model/Measure measure-id)))))))
 
 (deftest ^:parallel export-fk-segment-happy-path-test
   (testing "exports a segment's numeric id back to its portable entity_id"
@@ -658,8 +650,7 @@
                                                         [:field {:lib/uuid (str (random-uuid))} total-id]
                                                         0]]}]}}]
         (let [er (resolve.mp/export-resolver mp)]
-          (is (= segment-eid (resolve/export-fk er segment-id 'Segment)))
-          (is (= segment-eid (resolve/export-fk er segment-id :model/Segment))))))))
+          (is (= segment-eid (export-eid er :model/Segment segment-id))))))))
 
 (deftest ^:parallel import-fk-non-supported-models-still-not-implemented-test
   (testing "models we haven't wired up still throw :not-implemented-yet"
@@ -667,10 +658,10 @@
       ;; Card, Measure, Segment are wired up — see their happy-path tests below.
       ;; NativeQuerySnippet and Metric (the older standalone-metric concept, distinct from
       ;; metric-cards) remain unimplemented.
-      (doseq [model ['NativeQuerySnippet 'Metric]]
+      (doseq [model [:model/NativeQuerySnippet :model/Metric]]
         (testing (str "model " model)
           (try
-            (resolve/import-fk ir "someentityid_some_xyz" model)
+            (import-pk ir model "someentityid_some_xyz")
             (is false "expected throw")
             (catch clojure.lang.ExceptionInfo e
               (is (= :not-implemented-yet (:error (ex-data e)))))))))))
@@ -739,7 +730,7 @@
                            {"lookup-key"
                             {:id 500 :database_id 1 :entity-id store-entity-id}})
           er              (resolve.mp/export-resolver mp-with-cards store)
-          exported        (resolve/export-fk er 500 'Card)]
+          exported        (export-eid er :model/Card 500)]
       (is (= store-entity-id exported))
       (is (not= card-entity-id exported)
           "the metadata provider's permission-agnostic entity id is not used"))))
@@ -749,7 +740,7 @@
     (let [store (map-content-store {"lookup-key" {:id 500 :database_id 999 :entity_id card-entity-id}})
           er    (resolve.mp/export-resolver mp-with-cards store)]
       (try
-        (resolve/export-fk er 500 'Card)
+        (export-eid er :model/Card 500)
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d (ex-data e)]
@@ -764,7 +755,7 @@
                                    {"lookup-key" {:id 500 :database_id 1 :entity_id "  \t"}} :missing-card-entity-id}]
       (let [er (resolve.mp/export-resolver mp-with-cards (map-content-store rows))]
         (try
-          (resolve/export-fk er 500 'Card)
+          (export-eid er :model/Card 500)
           (is false "expected throw")
           (catch clojure.lang.ExceptionInfo e
             (is (= expected-error (:error (ex-data e))))))))))
@@ -774,13 +765,13 @@
     (let [card-eid "abcdefghijabcdefghij1"
           store    (map-content-store {card-eid {:id 4242 :database_id 1}})
           ir       (resolve.mp/import-resolver mp-simple store)]
-      (is (= 4242 (resolve/import-fk ir card-eid 'Card))))))
+      (is (= 4242 (import-pk ir :model/Card card-eid))))))
 
 (deftest ^:parallel import-fk-card-via-custom-content-store-unknown-test
   (testing "unknown entity_id from a custom store still surfaces :unknown-card"
     (let [ir (resolve.mp/import-resolver mp-simple (map-content-store {}))]
       (try
-        (resolve/import-fk ir "nonexistent_entity_id1" 'Card)
+        (import-pk ir :model/Card "nonexistent_entity_id1")
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d (ex-data e)]
@@ -794,7 +785,7 @@
           store    (map-content-store {card-eid {:id 99 :database_id 999}})
           ir       (resolve.mp/import-resolver mp-simple store)]
       (try
-        (resolve/import-fk ir card-eid 'Card)
+        (import-pk ir :model/Card card-eid)
         (is false "expected throw")
         (catch clojure.lang.ExceptionInfo e
           (let [d (ex-data e)]
@@ -807,74 +798,76 @@
 ;;; ============================================================
 
 (deftest ^:parallel import-fk-card-by-numeric-id-happy-path-test
-  (testing "on a numeric-id surface, a bare card id resolves to itself through the content store"
-    (binding [resolve/*numeric-ids-allowed?* true]
-      (let [store (map-content-store {"someEntityId12345678x" {:id 4242 :database_id 1}})
-            ir    (resolve.mp/import-resolver mp-simple store)]
-        (is (= 4242 (resolve/import-fk ir 4242 'Card)))))))
+  (testing "bare card id resolves to itself through content store"
+    (let [store (map-content-store {"someEntityId12345678x" {:id 4242 :database_id 1}})
+          ir    (resolve.mp/import-resolver mp-simple store)]
+      (is (= 4242 (import-pk ir :model/Card 4242))))))
 
-(deftest ^:parallel import-fk-card-by-numeric-id-consults-the-store-test
-  (testing (str "GHY-4410: the numeric branch must go THROUGH the content store, because the\n"
-                "agent-facing store is `read-checked` — that lookup is the permission check. A\n"
-                "store that returns nil (what `read-checked` yields for a card the caller cannot\n"
-                "read) must surface :unknown-card-id, never fall through to the card.")
-    (binding [resolve/*numeric-ids-allowed?* true]
-      (let [;; empty store == the read-checked store's answer for a forbidden card
-            ir (resolve.mp/import-resolver mp-simple (map-content-store {}))]
-        (try
-          (resolve/import-fk ir 4242 'Card)
-          (is false "expected throw — a numeric id that the store denies must not resolve")
-          (catch clojure.lang.ExceptionInfo e
-            (let [d (ex-data e)]
-              (is (true? (:agent-error? d)))
-              (is (= :unknown-card-id (:error d)))
-              (is (= 4242 (:card-id d))))))))))
+(deftest ^:parallel import-fk-card-by-numeric-id-consults-store-test
+  (testing (str "GHY-4410: numeric branch must go THROUGH content store, because agent-facing store is "
+                "`read-checked`, so that lookup is permission check; store returning nil must surface "
+                ":unknown-card-id, never fall through to card")
+    (let [ir (resolve.mp/import-resolver mp-simple (map-content-store {}))]
+      (try
+        (import-pk ir :model/Card 4242)
+        (is false "expected throw — a numeric id that the store denies must not resolve")
+        (catch clojure.lang.ExceptionInfo e
+          (let [d (ex-data e)]
+            (is (true? (:agent-error? d)))
+            (is (= 400 (:status-code d)))
+            (is (= :unknown-card-id (:error d)))
+            (is (= 4242 (:card-id d)))))))))
 
 (deftest ^:parallel import-fk-card-by-numeric-id-cross-database-test
-  (testing "the numeric branch carries the same cross-database guard as the portable one"
-    (binding [resolve/*numeric-ids-allowed?* true]
-      (let [store (map-content-store {"someEntityId12345678y" {:id 99 :database_id 999}})
-            ir    (resolve.mp/import-resolver mp-simple store)]
-        (try
-          (resolve/import-fk ir 99 'Card)
-          (is false "expected throw")
-          (catch clojure.lang.ExceptionInfo e
-            (let [d (ex-data e)]
-              (is (true? (:agent-error? d)))
-              (is (= :cross-database-card (:error d)))
-              (is (= 999 (:card-database-id d))))))))))
+  (testing "numeric branch carries same cross-database guard as portable one"
+    (let [store (map-content-store {"someEntityId12345678y" {:id 99 :database_id 999}})
+          ir    (resolve.mp/import-resolver mp-simple store)]
+      (try
+        (import-pk ir :model/Card 99)
+        (is false "expected throw")
+        (catch clojure.lang.ExceptionInfo e
+          (let [d (ex-data e)]
+            (is (true? (:agent-error? d)))
+            (is (= :cross-database-card (:error d)))
+            (is (= 999 (:card-database-id d)))))))))
 
 (deftest ^:parallel import-fk-numeric-consults-store-for-every-content-model-test
-  (testing (str "GHY-4410 follow-up: the numeric branch must cover EVERY content model, not just\n"
-                "Card. A numeric metric / segment / measure ref reaches the resolver by the same\n"
-                "route a numeric `source-card` does, and the store lookup is the permission check —\n"
-                "so a model that skipped it would let an unreadable one through unchecked.\n"
-                "An empty store stands in for what `read-checked` returns when the caller may not\n"
-                "read the row.")
-    (binding [resolve/*numeric-ids-allowed?* true]
-      (let [ir (resolve.mp/import-resolver mp-simple (map-content-store {}))]
-        (testing "Card (also the model metric refs resolve through)"
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No saved question or model found with id"
-                                (resolve/import-fk ir 4242 'Card))))
-        (testing "Measure"
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No measure found with id"
-                                (resolve/import-fk ir 4242 'Measure))))
-        (testing "Segment"
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No segment found with id"
-                                (resolve/import-fk ir 4242 'Segment))))))))
+  (testing "numeric branch consults content store for Card, Measure and Segment alike"
+    (let [ir (resolve.mp/import-resolver mp-simple (map-content-store {}))]
+      (testing "Card (also the model metric refs resolve through)"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No saved question or model found with id"
+                              (import-pk ir :model/Card 4242))))
+      (testing "Measure"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No measure found with id"
+                              (import-pk ir :model/Measure 4242))))
+      (testing "Segment"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No segment found with id"
+                              (import-pk ir :model/Segment 4242)))))))
 
-(deftest ^:parallel import-mbql-routes-numeric-content-refs-through-the-store-test
-  (testing (str "the same, one level up: `import-mbql`'s clause branches matched `portable-id?`,\n"
-                "which is string-only, so a numeric metric / segment / measure ref fell through\n"
-                "every branch and was never resolved at all — never reaching the store, never\n"
-                "read-checked. They now share one `content-ref?` guard, so no branch can be\n"
-                "forgotten.")
-    (binding [resolve/*numeric-ids-allowed?* true]
-      (let [ir (resolve.mp/import-resolver mp-simple (map-content-store {}))]
-        (doseq [[label clause] {"metric"  [:metric {} 4242]
-                                "segment" [:segment {} 4242]
-                                "measure" [:measure {} 4242]}]
-          (testing (str "a numeric " label " ref is resolved (and so permission-checked)")
-            (is (thrown? clojure.lang.ExceptionInfo
-                         (resolve/import-mbql ir {:stages [{:aggregation [clause]}]}))
-                (str "a numeric " label " ref must not pass through unresolved"))))))))
+(deftest ^:parallel import-mbql-routes-numeric-content-refs-through-store-test
+  (testing "with :numeric-ids-allowed?, numeric metric, segment and measure refs reach content store"
+    (let [ir (resolve/with-options (resolve.mp/import-resolver mp-simple (map-content-store {}))
+               {:numeric-ids-allowed? true})]
+      (doseq [[label clause] {"metric"  [:metric {} 4242]
+                              "segment" [:segment {} 4242]
+                              "measure" [:measure {} 4242]}]
+        (testing (str "numeric " label " ref is resolved, and so permission-checked")
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (serialization/import-mbql ir [{:stages [{:aggregation [clause]}]}]))
+              (str "a numeric " label " ref must not pass through unresolved")))))))
+
+(deftest ^:parallel import-mbql-numeric-source-card-test
+  (let [store (map-content-store {"someEntityId12345678z" {:id 4242 :database_id 1}})
+        ir    (resolve.mp/import-resolver mp-simple store)]
+    (testing "with :numeric-ids-allowed?, numeric source-card resolves through content store"
+      (is (=? {:source-card 4242}
+              (first (serialization/import-mbql (resolve/with-options ir {:numeric-ids-allowed? true})
+                                                [{:source-card 4242}])))))
+    (testing "with :numeric-ids-allowed?, numeric source-card store denies is rejected"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No saved question or model found with id"
+                            (serialization/import-mbql (resolve/with-options ir {:numeric-ids-allowed? true})
+                                                       [{:source-card 1}]))))
+    (testing "without :numeric-ids-allowed?, numeric content refs are not references and stay unresolved"
+      (is (=? {:source-card 1, :stages [{:aggregation [[:metric {} 1]]}]}
+              (first (serialization/import-mbql ir [{:source-card 1
+                                                     :stages      [{:aggregation [[:metric {} 1]]}]}])))))))

@@ -36,7 +36,7 @@
    "metabase/agent_lib/representations/repair.clj"
    "metabase/agent_lib/representations/resolve.clj"
    "metabase/metabot/tools/construct.clj"
-   "metabase/models/serialization/resolve/mp.clj"])
+   "metabase/serialization/resolve/mp.clj"])
 
 (def ^:private error-code-pattern
   "Matches `:error :some-code` in ex-data, which is how the pipeline tags an error for its caller."
